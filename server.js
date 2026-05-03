@@ -642,6 +642,7 @@ function checkAuth(req) {
 
 app.get('/', (req, res) => {
   const last = candleHistory[candleHistory.length-1];
+  const lastT = last ? (normalizeTime(last.t) || normalizeTime(last.bucket) || last.t) : null;
   const engSummary = {};
   for(const [n,e] of Object.entries(engines)){
     const closed = e.predictions.filter(p=>p.outcome==='WIN'||p.outcome==='LOSS');
@@ -654,7 +655,7 @@ app.get('/', (req, res) => {
     };
   }
   res.json({ status:'ok', instrument:INSTRUMENT, engine:'v3-4x',
-    candles:candleHistory.length, lastCandle:last?.t||null,
+    candles:candleHistory.length, lastCandle:lastT,
     engines:engSummary, lastGridSearch:lastGridSearchTime,
     trackRecord:trackRecord.length, uptime:process.uptime()
   });
@@ -691,7 +692,12 @@ app.post('/import_history', (req, res) => {
   try {
     const candles=req.body.candles||[]; let added=0;
     const existing=new Set(candleHistory.map(c=>c.bucket||c.t));
-    for(const c of candles){const b=c.bucket||c.t;if(!existing.has(b)){c.bucket=b;c.t=b;candleHistory.push(c);existing.add(b);added++;}}
+    for(const c of candles){
+      // Normalize timestamp
+      const tNorm = normalizeTime(c.t) || normalizeTime(c.bucket) || c.t;
+      const b = tNorm || c.bucket || c.t;
+      if(!existing.has(b)){c.bucket=b;c.t=b;candleHistory.push(c);existing.add(b);added++;}
+    }
     candleHistory.sort((a,b)=>(a.bucket||'').localeCompare(b.bucket||''));
     if(candleHistory.length>MAX_HISTORY) candleHistory=candleHistory.slice(-MAX_HISTORY);
     saveState();
@@ -768,28 +774,46 @@ app.post('/clear', (req, res) => {
 });
 
 // ─── Calendar data endpoint ───
+// Normalize timestamp to "YYYY-MM-DD HH:MM"
+function normalizeTime(t) {
+  if(!t) return null;
+  if(typeof t === 'number' || /^\d{10,13}$/.test(String(t))) {
+    // Unix timestamp (seconds or milliseconds)
+    const ms = String(t).length > 10 ? parseInt(t) : parseInt(t) * 1000;
+    const d = new Date(ms);
+    if(isNaN(d)) return null;
+    return d.toISOString().slice(0,16).replace('T',' ');
+  }
+  if(typeof t === 'string' && t.length >= 10 && t.includes('-')) return t.slice(0,16).replace('T',' ');
+  return null;
+}
+
 app.get('/calendar', (req, res) => {
   const days = {};
   candleHistory.forEach(c => {
-    const d = (c.t||c.bucket||'').slice(0,10);
-    if(!d) return;
-    if(!days[d]) days[d] = { date:d, candles:0, first:c.t, last:c.t };
+    const tNorm = normalizeTime(c.t) || normalizeTime(c.bucket);
+    if(!tNorm) return;
+    const d = tNorm.slice(0,10);
+    if(!days[d]) days[d] = { date:d, candles:0, first:tNorm, last:tNorm };
     days[d].candles++;
-    if(c.t < days[d].first) days[d].first = c.t;
-    if(c.t > days[d].last) days[d].last = c.t;
+    if(tNorm < days[d].first) days[d].first = tNorm;
+    if(tNorm > days[d].last) days[d].last = tNorm;
   });
-  // Add trade counts per day
   trackRecord.forEach(t => {
-    const d = (t.exitTime||t.signalTime||t.logged||'').slice(0,10);
+    const tNorm = normalizeTime(t.exitTime) || normalizeTime(t.signalTime) || normalizeTime(t.logged);
+    if(!tNorm) return;
+    const d = tNorm.slice(0,10);
     if(days[d]) {
       days[d].trades = (days[d].trades||0)+1;
       days[d].wins = (days[d].wins||0)+(t.outcome==='WIN'?1:0);
       days[d].pnl = r2((days[d].pnl||0)+(t.pnlPt||0));
     }
   });
+  const firstC = candleHistory[0];
+  const lastC = candleHistory[candleHistory.length-1];
   res.json({ totalCandles:candleHistory.length, totalDays:Object.keys(days).length,
-    firstDate:candleHistory[0]?.t?.slice(0,10)||null,
-    lastDate:candleHistory[candleHistory.length-1]?.t?.slice(0,10)||null,
+    firstDate: normalizeTime(firstC?.t || firstC?.bucket)?.slice(0,10) || null,
+    lastDate: normalizeTime(lastC?.t || lastC?.bucket)?.slice(0,10) || null,
     days:Object.values(days).sort((a,b)=>a.date.localeCompare(b.date))
   });
 });
