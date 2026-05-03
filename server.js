@@ -777,14 +777,23 @@ app.post('/clear', (req, res) => {
 // Normalize timestamp to "YYYY-MM-DD HH:MM"
 function normalizeTime(t) {
   if(!t) return null;
-  if(typeof t === 'number' || /^\d{10,13}$/.test(String(t))) {
-    // Unix timestamp (seconds or milliseconds)
-    const ms = String(t).length > 10 ? parseInt(t) : parseInt(t) * 1000;
+  const s = String(t).trim();
+  // Pure number
+  if(typeof t === 'number') {
+    const ms = t > 9999999999 ? t : t * 1000;
     const d = new Date(ms);
-    if(isNaN(d)) return null;
-    return d.toISOString().slice(0,16).replace('T',' ');
+    return isNaN(d) ? null : d.toISOString().slice(0,16).replace('T',' ');
   }
-  if(typeof t === 'string' && t.length >= 10 && t.includes('-')) return t.slice(0,16).replace('T',' ');
+  // String of digits (with optional trailing " 00:00" etc)
+  const digitMatch = s.match(/^(\d{10,13})/);
+  if(digitMatch) {
+    const num = parseInt(digitMatch[1]);
+    const ms = num > 9999999999 ? num : num * 1000;
+    const d = new Date(ms);
+    return isNaN(d) ? null : d.toISOString().slice(0,16).replace('T',' ');
+  }
+  // ISO-ish string: "2026-04-24 08:30" or "2026-04-24T08:30:00Z"
+  if(s.length >= 10 && s.includes('-')) return s.replace('T',' ').replace('Z','').slice(0,16);
   return null;
 }
 
