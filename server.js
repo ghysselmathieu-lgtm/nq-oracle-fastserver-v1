@@ -406,6 +406,9 @@ class EngineInstance {
     if(p.minScore) this.params.minScore=p.minScore;
     if(p.htfOn!==undefined) this.params.htfOn=p.htfOn;
     if(p.dirMode) this.params.dirMode=p.dirMode;
+    if(p.cooldown) this.params.cooldown=parseInt(p.cooldown);
+    if(p.contracts) this.params.contracts=parseInt(p.contracts);
+    if(p.commission) this.params.commission=parseFloat(p.commission);
   }
 
   logTrack(trade, exit) {
