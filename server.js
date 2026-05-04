@@ -30,9 +30,10 @@ const PORT = process.env.PORT || 8889;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'NQsecret2024';
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'mathieu-nq-oracle';
 const TICK_SIZE = parseFloat(process.env.TICK_SIZE || '0.25');
-const PT_VALUE = parseFloat(process.env.PT_VALUE || '2');
-const CURRENCY = process.env.CURRENCY || '$';
+const PT_VALUE = parseFloat(process.env.PT_VALUE || '1.708');   // MNQ default in EUR (1 punt = €1.708)
+const CURRENCY = process.env.CURRENCY || '€';
 const INSTRUMENT = process.env.INSTRUMENT || 'NQ';
+// Voor full NQ: zet env PT_VALUE=17.08 en COMMISSION=4.80
 const MAX_HISTORY = 100000;
 const DATA_DIR = process.env.DATA_DIR || '/tmp';
 const GRID_SEARCH_HOUR = 0; // 00:00 UTC = 02:00 Belgisch (zomer)
@@ -80,7 +81,7 @@ let lastGridSearchTime = null;
 const BASE_PARAMS = {
   tf:5, sl:1.0, tp:1.5, atrMax:45, maxBars:19,
   minScore:4, htfOn:true, dirMode:'both',
-  cooldown:15, contracts:1, commission: parseFloat(process.env.COMMISSION || '3.00'),
+  cooldown:5, contracts:1, commission: parseFloat(process.env.COMMISSION || '2.74'),
 };
 
 // ═══════════════════════════════════════════════════════
@@ -377,7 +378,7 @@ class EngineInstance {
           this.pendingSwitch = { params:best.params, sessionName:session.name };
           console.log(`⚠ [${this.filterName}] Sessie→${session.name} maar trade open — uitgesteld`);
         } else {
-          this.ams(best.params);
+          this.applyParams(best.params);
           console.log(`🔄 [${this.filterName}] Auto-apply ${session.name}: SL=${best.params.sl} TP=${best.params.tp}`);
         }
       } else {
@@ -392,7 +393,7 @@ class EngineInstance {
     if (this.activeTrade || this.activePending) return;
     const sw = this.pendingSwitch;
     this.pendingSwitch = null;
-    this.ams(sw.params);
+    this.applyParams(sw.params);
     console.log(`🔄 [${this.filterName}] Uitgestelde wissel→${sw.sessionName}: SL=${sw.params.sl} TP=${sw.params.tp}`);
   }
 
@@ -476,21 +477,40 @@ function runNightlyGridSearch() {
   });
 
   // Per filter + per session: zoek beste params
+  // Rank-formule per preset (afgesproken met user):
+  //   OFF    = pnl                       (max P&L totaal)
+  //   BAL    = ev * √n * (wr/0.5)        (balanced P&L × WR — historische default)
+  //   QUAL   = ev * (wr/0.5)^2           (extra gewicht op WR, blijft ev-gevoelig)
+  //   STRICT = wr * √n                   (max WR, met √n als minimum-robuustheid)
+  function computeRank(stats, filterName) {
+    const wr = stats.wr;          // 0..1 in deze codebase
+    const n  = Math.max(1, stats.n);
+    const ev = stats.ev;
+    const pnl = stats.pnl;
+    switch(filterName) {
+      case 'OFF':    return pnl;
+      case 'QUAL':   return ev * Math.pow(wr / 0.5, 2);
+      case 'STRICT': return wr * Math.sqrt(n);
+      case 'BAL':
+      default:       return ev * Math.sqrt(n) * (wr / 0.5);
+    }
+  }
+
   for (const [filterName, preset] of Object.entries(FILTER_PRESETS)) {
     gridSearchResults[filterName] = {};
 
-    // Globale grid search (alle candles)
+    // Globale grid search (alle candles) — n >= 20 voor robuust optimum
     const globalResults = [];
     for (const p of combos) {
       const res = gridSearchEngine(candleHistory, p, preset);
-      if (res && res.n >= 3) {
-        const rank = res.ev * Math.sqrt(Math.max(1,res.n)) * (res.wr/0.5);
+      if (res && res.n >= 20) {
+        const rank = computeRank(res, filterName);
         globalResults.push({ params:p, stats:res, rank });
       }
     }
     globalResults.sort((a,b) => b.rank - a.rank);
 
-    // Top-20 per sessie testen
+    // Top-20 per sessie testen — n >= 5 per sessie
     const top20 = globalResults.slice(0, 20);
     for (const session of SESSIONS) {
       const sc = sessionCandles[session.id];
@@ -498,8 +518,8 @@ function runNightlyGridSearch() {
       let best = null;
       for (const r of top20) {
         const res = gridSearchEngine(sc, r.params, preset);
-        if (res && res.n >= 2) {
-          const rank = res.ev * Math.sqrt(Math.max(1,res.n)) * (res.wr/0.5);
+        if (res && res.n >= 5) {
+          const rank = computeRank(res, filterName);
           if (!best || rank > best.rank) best = { params:r.params, stats:res, rank };
         }
       }
