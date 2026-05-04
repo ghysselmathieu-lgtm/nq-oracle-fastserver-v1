@@ -517,9 +517,17 @@ function runNightlyGridSearch() {
   saveState();
   console.log(`✅ Grid search klaar in ${((Date.now()-t0)/1000).toFixed(1)}s\n`);
 
-  // Apply regime for current session
-  for (const eng of Object.values(engines)) eng.checkRegime(candleHistory);
-}
+  // Force-apply best params for current session
+  const currentHour = new Date().getHours();
+  const currentSession = getSessionForHour(currentHour);
+  for (const [name, eng] of Object.entries(engines)) {
+    const best = (gridSearchResults[name]||{})[currentSession.id];
+    if (best) {
+      eng.applyParams(best.params);
+      console.log(`✅ [${name}] Grid→${currentSession.name}: SL=${best.params.sl} TP=${best.params.tp} ATR=${best.params.atrMax} (${(best.stats.wr*100).toFixed(0)}%WR, ${best.stats.n} trades)`);
+    }
+    eng.currentSessionId = currentSession.id;
+  }
 
 // Schedule nightly grid search
 let lastGridHour = -1;
