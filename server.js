@@ -377,7 +377,7 @@ class EngineInstance {
           this.pendingSwitch = { params:best.params, sessionName:session.name };
           console.log(`⚠ [${this.filterName}] Sessie→${session.name} maar trade open — uitgesteld`);
         } else {
-          this.applyParams(best.params);
+          this.ams(best.params);
           console.log(`🔄 [${this.filterName}] Auto-apply ${session.name}: SL=${best.params.sl} TP=${best.params.tp}`);
         }
       } else {
@@ -392,11 +392,11 @@ class EngineInstance {
     if (this.activeTrade || this.activePending) return;
     const sw = this.pendingSwitch;
     this.pendingSwitch = null;
-    this.applyParams(sw.params);
+    this.ams(sw.params);
     console.log(`🔄 [${this.filterName}] Uitgestelde wissel→${sw.sessionName}: SL=${sw.params.sl} TP=${sw.params.tp}`);
   }
 
-  applyParams(p) {
+    applyParams(p) {
     if(p.sl) this.params.sl=p.sl;
     if(p.tp) this.params.tp=p.tp;
     if(p.atrMax) this.params.atrMax=p.atrMax;
@@ -404,6 +404,9 @@ class EngineInstance {
     if(p.minScore) this.params.minScore=p.minScore;
     if(p.htfOn!==undefined) this.params.htfOn=p.htfOn;
     if(p.dirMode) this.params.dirMode=p.dirMode;
+    if(p.cooldown) this.params.cooldown=parseInt(p.cooldown);
+    if(p.contracts) this.params.contracts=parseInt(p.contracts);
+    if(p.commission) this.params.commission=parseFloat(p.commission);
   }
 
   logTrack(trade, exit) {
