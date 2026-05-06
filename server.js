@@ -772,14 +772,17 @@ const EXECUTOR_SECRET = process.env.EXECUTOR_SECRET || '';
 
 function forwardToExecutor(signal) {
   if (!EXECUTOR_URL) return;
+  // Tick rounding: MNQ/NQ trade in 0.25 punt increments — geen sub-quarter ticks toegestaan
+  const TICK = 0.25;
+  const roundTick = (p) => Math.round(p / TICK) * TICK;
   // Map Railway signal-formaat naar Python executor /order schema
   const payload = {
     instrument: signal.instrument,                       // FDXM | MNQ
     side: signal.dir === 'bull' ? 'BUY' : 'SELL',        // dir → side
     qty: signal.qty || 1,
-    entry: signal.entry,
-    sl: signal.stop,                                     // stop → sl
-    tp: signal.tgt,                                      // tgt → tp
+    entry: roundTick(signal.entry),                      // tick-aligned
+    sl: roundTick(signal.stop),                          // stop → sl, tick-aligned
+    tp: roundTick(signal.tgt),                           // tgt → tp, tick-aligned
     filter: signal.filter
   };
   const data = JSON.stringify(payload);
