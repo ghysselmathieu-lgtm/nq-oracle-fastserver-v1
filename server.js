@@ -13,6 +13,14 @@
  * v3.1 (Cloudflare Access): forwardToExecutor stuurt nu CF-Access-Client-Id en
  * CF-Access-Client-Secret headers mee als CF_ACCESS_CLIENT_ID en CF_ACCESS_CLIENT_SECRET
  * env vars zijn gezet. Nodig om Cloudflare Access te passeren bij server-to-server calls.
+ *
+ * v3.13.5 (signal_id unified): elke signaal krijgt een deterministische ID
+ *   signal_id = "{INSTRUMENT}_{FILTER}_{bt_ms}_{SIDE}"  bv. "MNQ_QUAL_1747058340000_LONG"
+ *   - gegenereerd in EngineInstance.tick() bij pending-creatie
+ *   - gespread naar activePending → activeTrade → predictions (overleeft saveState/reload)
+ *   - geforward naar executor in /order payload (executor zet als orderRef op parent + _TP/_SL op brackets)
+ *   - opgeslagen in trackRecord row → dashboards joinen op signal_id ipv tijd+prijs heuristics
+ *   Idempotent: zelfde bar+filter+side = altijd zelfde signal_id (handig bij retry/dedupe).
  */
 
 const express = require('express');
@@ -524,18 +532,26 @@ class EngineInstance {
     // Create pending
     this.lastSignalIdx = ri;
     this.signalCount++;
-    this.activePending = { id:this.signalCount, ...sig, barsWaiting:0, contracts:this.params.contracts, status:'pending' };
+    // v3.13.5: signal_id = unified ID door alle layers ({instrument}_{filter}_{bt_ms}_{side})
+    //         Idempotent: zelfde bar+filter+side = altijd zelfde signal_id (ook bij retry).
+    //         Wordt mee-gespread naar activeTrade en predictions, en gebruikt als orderRef in executor.
+    const lastCandle = candleHistory[candleHistory.length - 1] || {};
+    const instr = INSTRUMENT === 'DAX' ? 'FDXM' : 'MNQ';
+    const btMs = lastCandle.bar_time ? Date.parse(lastCandle.bar_time) : Date.now();
+    const sideStr = sig.dir === 'bull' ? 'LONG' : 'SHORT';
+    const signal_id = `${instr}_${this.filterName}_${btMs}_${sideStr}`;
+    this.activePending = { id:this.signalCount, signal_id, ...sig, barsWaiting:0, contracts:this.params.contracts, status:'pending' };
     this.predictions.push({...this.activePending, outcome:'pending', filter:this.filterName});
-    console.log(`★ [${this.filterName}] #${this.signalCount} ${sig.dir.toUpperCase()} sc=${sig.score} ${sig.setup} entry=${sig.entry}`);
+    console.log(`★ [${this.filterName}] #${this.signalCount} ${sig.dir.toUpperCase()} sc=${sig.score} ${sig.setup} entry=${sig.entry} sid=${signal_id}`);
     sendPush(`[${this.filterName}] ${sig.dir==='bull'?'▲ LONG':'▼ SHORT'} sc=${sig.score} ${sig.setup}\nEntry: ${sig.entry}\nTP: ${sig.tgt} | SL: ${sig.stop}`, '🔔');
 
     // Forward to executor (VPS) if configured
-    const lastCandle = candleHistory[candleHistory.length - 1] || {};            // v3.13.3: voor ts forward
     forwardToExecutor({
-      instrument: INSTRUMENT === 'DAX' ? 'FDXM' : 'MNQ',  // Default mini contract
+      instrument: instr,
       dir: sig.dir, entry: sig.entry, stop: sig.stop, tgt: sig.tgt,
       score: sig.score, setup: sig.setup, filter: this.filterName,
       qty: this.params.contracts || 1,
+      signal_id,                                                                  // v3.13.5: unified ID
       bar_tn: lastCandle.bar_close_tn || null,                                    // v3.13.3: Pine alert eval moment
       bar_bt: lastCandle.bar_time || null                                         // v3.13.3: Pine bar open moment
     });
@@ -586,6 +602,7 @@ class EngineInstance {
 
   logTrack(trade, exit) {
     trackRecord.push({
+      signal_id:trade.signal_id||null,                                            // v3.13.5: unified ID door alle layers
       filter:this.filterName, dir:trade.dir, setup:trade.setup||'', score:trade.score||0,
       entry:trade.entry, tgt:trade.tgt, stp:trade.stop||trade.stp,
       outcome:exit.o||exit.outcome, pnlPt:trade.pnlPt||0, pnlCur:trade.pnlCur||0,
@@ -794,6 +811,7 @@ function forwardToExecutor(signal) {
     sl: roundTick(signal.stop),                          // stop → sl, tick-aligned
     tp: roundTick(signal.tgt),                           // tgt → tp, tick-aligned
     filter: signal.filter,
+    signal_id: signal.signal_id || null,                 // v3.13.5: unified ID door alle layers (orderRef in executor)
     ts_bar_tn: signal.bar_tn || null,                    // v3.13.3: Pine alert eval moment (TradingView klok)
     ts_bar_bt: signal.bar_bt || null,                    // v3.13.3: Pine bar open moment
     ts_railway_forward: new Date().toISOString()         // v3.13.3: Railway forward moment
@@ -1035,7 +1053,7 @@ app.get('/state', (req, res) => {
       belgianHour: nowBelgianHour(),
       detectedSession: getSessionForHour(nowBelgianHour()).id,
       serverNow: new Date().toISOString(),
-      buildVersion: 'CF-ACCESS-v3.1',
+      buildVersion: 'v3.13.5-signal-id',
       saveFailures: saveFailureCount,
       lastSaveError: lastSaveError,
       gridSearchInProgress: gridSearchInProgress,
@@ -1179,7 +1197,7 @@ loadState();
 
 app.listen(PORT, () => {
   console.log(`\n${'═'.repeat(60)}`);
-  console.log(`  ${INSTRUMENT} Oracle Server v3.1 — 4 Engines + Grid Search`);
+  console.log(`  ${INSTRUMENT} Oracle Server v3.13.5 — 4 Engines + Grid Search + signal_id`);
   console.log(`  Port: ${PORT} | Tick: ${TICK_SIZE} | ${CURRENCY}${PT_VALUE}/pt`);
   console.log(`  Candles: ${candleHistory.length} | Track: ${trackRecord.length}`);
   console.log(`  Executor: ${EXECUTOR_URL || '(not configured)'}`);
