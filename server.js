@@ -530,11 +530,14 @@ class EngineInstance {
     sendPush(`[${this.filterName}] ${sig.dir==='bull'?'▲ LONG':'▼ SHORT'} sc=${sig.score} ${sig.setup}\nEntry: ${sig.entry}\nTP: ${sig.tgt} | SL: ${sig.stop}`, '🔔');
 
     // Forward to executor (VPS) if configured
+    const lastCandle = candleHistory[candleHistory.length - 1] || {};            // v3.13.3: voor ts forward
     forwardToExecutor({
       instrument: INSTRUMENT === 'DAX' ? 'FDXM' : 'MNQ',  // Default mini contract
       dir: sig.dir, entry: sig.entry, stop: sig.stop, tgt: sig.tgt,
       score: sig.score, setup: sig.setup, filter: this.filterName,
-      qty: this.params.contracts || 1
+      qty: this.params.contracts || 1,
+      bar_tn: lastCandle.bar_close_tn || null,                                    // v3.13.3: Pine alert eval moment
+      bar_bt: lastCandle.bar_time || null                                         // v3.13.3: Pine bar open moment
     });
   }
 
@@ -790,7 +793,10 @@ function forwardToExecutor(signal) {
     entry: roundTick(signal.entry),                      // tick-aligned
     sl: roundTick(signal.stop),                          // stop → sl, tick-aligned
     tp: roundTick(signal.tgt),                           // tgt → tp, tick-aligned
-    filter: signal.filter
+    filter: signal.filter,
+    ts_bar_tn: signal.bar_tn || null,                    // v3.13.3: Pine alert eval moment (TradingView klok)
+    ts_bar_bt: signal.bar_bt || null,                    // v3.13.3: Pine bar open moment
+    ts_railway_forward: new Date().toISOString()         // v3.13.3: Railway forward moment
   };
   const data = JSON.stringify(payload);
   const url = new URL(EXECUTOR_URL + '/order');
@@ -953,11 +959,13 @@ app.get('/', (req, res) => {
 app.post('/webhook', (req, res) => {
   if(!checkAuth(req)) return res.status(401).json({error:'Unauthorized'});
   try {
-    const data=req.body; let btMs=null;
+    const data=req.body; let btMs=null, tnMs=null;
     if(data.bt){try{btMs=parseInt(data.bt);}catch(e){}delete data.bt;}
+    if(data.tn){try{tnMs=parseInt(data.tn);}catch(e){}delete data.tn;}            // v3.13.3: Pine timenow (alert eval moment)
     const norm=normalize(data); const tfRaw=norm._tf_data||{}; delete norm._tf_data;
     for(const [tf,c] of Object.entries(tfRaw)){if(c)tfData[tf]=c;}
     const now=new Date(); norm.received_at=now.toISOString();
+    if(tnMs){norm.bar_close_tn=new Date(tnMs).toISOString();}                     // v3.13.3: opslaan op candle voor signal forward
     let bucket; if(btMs){const bd=new Date(btMs);bucket=bd.toISOString().slice(0,16).replace('T',' ');norm.bar_time=bd.toISOString();}
     else{bucket=now.toISOString().slice(0,16).replace('T',' ');}
     norm.bucket=bucket; norm.t=bucket;
